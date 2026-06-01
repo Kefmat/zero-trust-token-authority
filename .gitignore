@@ -1,0 +1,19 @@
+# Dependency directories
+node_modules/
+
+# TypeScript build output
+dist/
+out/
+
+# IDE / Editor folders
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# OS generated files
+.DS_Store
+Thumbs.db
