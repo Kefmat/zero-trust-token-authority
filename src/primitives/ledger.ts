@@ -13,8 +13,8 @@ export interface LedgerEvent {
 /**
  * An append-only cryptographic ledger powered by a Merkle Tree.
  * Guarantees that historical identity events cannot be retroactively altered.
- * * @author Kefmat
- * @version 1.0.0
+ * @author Kefmat
+ * @version 1.0.1
  */
 export class MerkleLedger {
     private events: LedgerEvent[] = [];
@@ -28,7 +28,6 @@ export class MerkleLedger {
     public appendEvent(event: LedgerEvent): string {
         this.events.push(event);
         
-        // Deterministically stringify the event to ensure consistent hashing
         const eventString = JSON.stringify(event);
         const hash = this.hashNode(eventString);
         this.leafHashes.push(hash);
@@ -48,23 +47,31 @@ export class MerkleLedger {
 
     /**
      * Recursively builds the Merkle Tree upwards from the leaf hashes.
+     * Implements strict defensive type guards to satisfy index boundaries.
      */
     private buildTree(hashes: string[]): string {
-        // Base case: we have reached the root node
-        if (hashes.length === 1) return hashes[0];
+        const firstElement = hashes[0];
+
+        // Base case: we have reached the root node safely
+        if (hashes.length === 1 && firstElement !== undefined) {
+            return firstElement;
+        }
 
         const nextLevel: string[] = [];
         
         // Pair up adjacent hashes and hash them together
         for (let i = 0; i < hashes.length; i += 2) {
             const leftChild = hashes[i];
-            // If there's an odd number of leaves, duplicate the last node (standard Merkle behavior)
-            const rightChild = i + 1 < hashes.length ? hashes[i + 1] : leftChild; 
+            const rightChild = hashes[i + 1];
             
-            nextLevel.push(this.hashNode(leftChild + rightChild));
+            // Explicitly assert existence via type guards to bypass noUncheckedIndexedAccess
+            if (leftChild !== undefined) {
+                const actualRight = rightChild !== undefined ? rightChild : leftChild;
+                nextLevel.push(this.hashNode(leftChild + actualRight));
+            }
         }
 
-        // Move up one level in the tree
+        // Move up one level in the tree recursively
         return this.buildTree(nextLevel);
     }
 
