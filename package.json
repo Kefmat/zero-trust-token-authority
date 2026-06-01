@@ -1,9 +1,10 @@
 {
   "name": "zero-trust-token-authority",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "dist/index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "tsc && node dist/index.js"
   },
   "keywords": [],
   "author": "",
