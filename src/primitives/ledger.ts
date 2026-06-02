@@ -22,7 +22,7 @@ export interface MerkleProofStep {
  * An append-only cryptographic ledger powered by a Merkle Tree.
  * Guarantees that historical identity events cannot be retroactively altered.
  * @author Kefmat
- * @version 1.1.0
+ * @version 1.1.1
  */
 export class MerkleLedger {
     private events: LedgerEvent[] = [];
@@ -96,6 +96,35 @@ export class MerkleLedger {
         }
 
         return proof;
+    }
+
+    /**
+     * Recursively builds the Merkle Tree upwards from the leaf hashes.
+     * NOTE FOR THE NEXT PROGRAMMER: Implements strict defensive type guards 
+     * checking for undefined to satisfy strict index boundaries under noUncheckedIndexedAccess.
+     * If an odd number of elements exists at a level, the final element pairs with itself.
+     */
+    private buildTree(hashes: string[]): string {
+        const firstElement = hashes[0];
+
+        // Base case: we have reached the root node safely
+        if (hashes.length === 1 && firstElement !== undefined) {
+            return firstElement;
+        }
+
+        const nextLevel: string[] = [];
+        
+        for (let i = 0; i < hashes.length; i += 2) {
+            const leftChild = hashes[i];
+            const rightChild = hashes[i + 1];
+            
+            if (leftChild !== undefined) {
+                const actualRight = rightChild !== undefined ? rightChild : leftChild;
+                nextLevel.push(this.hashNode(leftChild + actualRight));
+            }
+        }
+
+        return this.buildTree(nextLevel);
     }
 
     /**
