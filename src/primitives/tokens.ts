@@ -4,6 +4,7 @@ import { generateKeyPairSync, sign, verify, createHash } from 'node:crypto';
  * Standard structure for an internal token envelope payload.
  */
 export interface AccessTokenPayload {
+    jti: string;       // Unique token identifier for explicit tracking and revocation
     sub: string;       // Subject identifier (e.g., user or service ID)
     iss: string;       // Issuer identifier
     iat: number;       // Issued-at Unix timestamp
@@ -21,7 +22,7 @@ export interface DPoPProofPayload {
     htm: string;       // Target HTTP Method (e.g., GET, POST)
     htu: string;       // Target HTTP URL string
     iat: number;       // Proof issuance timestamp
-    jti: string;       // Unique token token/nonce identifier to prevent replay attacks
+    jti: string;       // Unique token identifier to prevent replay attacks
     pubKey: string;    // Client public key embedded within the proof header
 }
 
@@ -33,7 +34,7 @@ export interface DPoPProofPayload {
  * must remain `undefined`. This is a strict constraint of the Ed25519 standard in Node.js, as Ed25519 
  * does not support separate pre-hash digest identifiers like RSA or traditional ECDSA.
  * * @author Kefmat
- * @version 1.0.1
+ * @version 1.2.0
  */
 export class TokenEngine {
     
@@ -67,8 +68,6 @@ export class TokenEngine {
         };
 
         const serializedPayload = JSON.stringify(payload);
-        
-        // For Ed25519, the algorithm argument must be undefined or null
         const signatureBuffer = sign(undefined, Buffer.from(serializedPayload), clientPrivateKey);
         const signature = signatureBuffer.toString('hex');
 
@@ -89,19 +88,15 @@ export class TokenEngine {
         
         const payload = parsed.payload;
         
-        // Assert strict endpoint parameters match expected pathing
         if (payload.htm !== expectedHtm || payload.htu !== expectedHtu) {
             throw new Error("DPoP integrity check failed: HTTP context mismatch.");
         }
 
-        // Verify validity window to prevent long-lived replay opportunities
         if (Date.now() - payload.iat > 60000) {
             throw new Error("DPoP validation failed: Token assertion window expired.");
         }
 
         const serializedPayload = JSON.stringify(payload);
-        
-        // For Ed25519, validation requires passing undefined as the algorithm parameter
         const isSignatureValid = verify(
             undefined,
             Buffer.from(serializedPayload),
@@ -113,7 +108,6 @@ export class TokenEngine {
             throw new Error("DPoP signature validation failed: Untrusted binding signature.");
         }
 
-        // Compute the thumbprint of the verified client public key to serve as the structural binding link
         return createHash('sha256').update(payload.pubKey).digest('hex');
     }
 
@@ -127,7 +121,10 @@ export class TokenEngine {
         authorityKid: string
     ): string {
         const now = Date.now();
+        const generatedJti = `AUTH-JTI-${Math.random().toString(36).substring(2, 11).toUpperCase()}`;
+        
         const payload: AccessTokenPayload = {
+            jti: generatedJti,
             sub,
             iss: 'zero-trust-token-authority',
             iat: now,
@@ -139,8 +136,6 @@ export class TokenEngine {
         };
 
         const serializedPayload = JSON.stringify(payload);
-        
-        // The authority matrix also generates Ed25519 keys, requiring an undefined algorithm parameters
         const signatureBuffer = sign(undefined, Buffer.from(serializedPayload), authorityPrivateKey);
         const signature = signatureBuffer.toString('hex');
 
@@ -148,7 +143,7 @@ export class TokenEngine {
     }
 
     /**
-     * Decodes and validates an authority access token token against public key parameters.
+     * Decodes and validates an authority access token against public key parameters.
      */
     public static verifyAccessToken(token: string, authorityPublicKey: string): AccessTokenPayload {
         const decodedString = Buffer.from(token, 'base64url').toString('utf8');
@@ -161,8 +156,6 @@ export class TokenEngine {
         }
 
         const serializedPayload = JSON.stringify(payload);
-
-        // Verify the signature against the authority's public Ed25519 key parameters
         const isSignatureValid = verify(
             undefined,
             Buffer.from(serializedPayload),
