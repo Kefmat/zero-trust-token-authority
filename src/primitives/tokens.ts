@@ -1,4 +1,4 @@
-import { generateKeyPairSync, createSign, createVerify, createHash } from 'node:crypto';
+import { generateKeyPairSync, sign, verify, createHash } from 'node:crypto';
 
 /**
  * Standard structure for an internal token envelope payload.
@@ -28,8 +28,12 @@ export interface DPoPProofPayload {
 /**
  * Core cryptographic compilation layer managing token issuance and DPoP containment processing.
  * Enforces strict zero-trust validation matrices across distributed systems.
- * @author Kefmat
- * @version 1.0.0
+ * * NOTE FOR THE NEXT PROGRAMMER: This class leverages the raw `sign` and `verify` functional utilities 
+ * from 'node:crypto' rather than the stream-based `createSign` class. The first parameter (algorithm) 
+ * must remain `undefined`. This is a strict constraint of the Ed25519 standard in Node.js, as Ed25519 
+ * does not support separate pre-hash digest identifiers like RSA or traditional ECDSA.
+ * * @author Kefmat
+ * @version 1.0.1
  */
 export class TokenEngine {
     
@@ -46,6 +50,7 @@ export class TokenEngine {
 
     /**
      * Synthesizes and cryptographically signs a client-side DPoP proof envelope.
+     * Enforces Ed25519 compliance by supplying an undefined algorithm parameter to the signer.
      */
     public static createClientDPoPProof(
         clientPrivateKey: string,
@@ -62,9 +67,10 @@ export class TokenEngine {
         };
 
         const serializedPayload = JSON.stringify(payload);
-        const sign = createSign('RSA-SHA256'); // Using primitive signing mechanisms for raw buffers
-        sign.update(serializedPayload);
-        const signature = sign.sign(clientPrivateKey, 'hex');
+        
+        // For Ed25519, the algorithm argument must be undefined or null
+        const signatureBuffer = sign(undefined, Buffer.from(serializedPayload), clientPrivateKey);
+        const signature = signatureBuffer.toString('hex');
 
         return Buffer.from(JSON.stringify({ payload, signature })).toString('base64url');
     }
@@ -94,10 +100,15 @@ export class TokenEngine {
         }
 
         const serializedPayload = JSON.stringify(payload);
-        const verify = createVerify('RSA-SHA256');
-        verify.update(serializedPayload);
         
-        const isSignatureValid = verify.verify(payload.pubKey, parsed.signature, 'hex');
+        // For Ed25519, validation requires passing undefined as the algorithm parameter
+        const isSignatureValid = verify(
+            undefined,
+            Buffer.from(serializedPayload),
+            payload.pubKey,
+            Buffer.from(parsed.signature, 'hex')
+        );
+
         if (!isSignatureValid) {
             throw new Error("DPoP signature validation failed: Untrusted binding signature.");
         }
@@ -128,9 +139,10 @@ export class TokenEngine {
         };
 
         const serializedPayload = JSON.stringify(payload);
-        const sign = createSign('RSA-SHA256');
-        sign.update(serializedPayload);
-        const signature = sign.sign(authorityPrivateKey, 'hex');
+        
+        // The authority matrix also generates Ed25519 keys, requiring an undefined algorithm parameters
+        const signatureBuffer = sign(undefined, Buffer.from(serializedPayload), authorityPrivateKey);
+        const signature = signatureBuffer.toString('hex');
 
         return Buffer.from(JSON.stringify({ payload, signature })).toString('base64url');
     }
@@ -149,10 +161,15 @@ export class TokenEngine {
         }
 
         const serializedPayload = JSON.stringify(payload);
-        const verify = createVerify('RSA-SHA256');
-        verify.update(serializedPayload);
 
-        const isSignatureValid = verify.verify(authorityPublicKey, parsed.signature, 'hex');
+        // Verify the signature against the authority's public Ed25519 key parameters
+        const isSignatureValid = verify(
+            undefined,
+            Buffer.from(serializedPayload),
+            authorityPublicKey,
+            Buffer.from(parsed.signature, 'hex')
+        );
+
         if (!isSignatureValid) {
             throw new Error("Access token validation failed: Corrupted authority signature.");
         }
