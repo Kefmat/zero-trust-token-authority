@@ -11,10 +11,18 @@ export interface LedgerEvent {
 }
 
 /**
+ * Representation of an individual step within a Merkle cryptographic proof path.
+ */
+export interface MerkleProofStep {
+    position: 'left' | 'right';
+    hash: string;
+}
+
+/**
  * An append-only cryptographic ledger powered by a Merkle Tree.
  * Guarantees that historical identity events cannot be retroactively altered.
  * @author Kefmat
- * @version 1.0.1
+ * @version 1.1.0
  */
 export class MerkleLedger {
     private events: LedgerEvent[] = [];
@@ -46,39 +54,54 @@ export class MerkleLedger {
     }
 
     /**
-     * Recursively builds the Merkle Tree upwards from the leaf hashes.
-     * Implements strict defensive type guards to satisfy index boundaries.
+     * Generates an out-of-band cryptographic audit proof path for a given log event index.
+     * NOTE FOR THE NEXT PROGRAMMER: This algorithm iteratively moves up the tree levels, 
+     * tracking the target index relative to each paired branch layer. It explicitly guards 
+     * against undefined elements to respect strict array boundaries.
+     * @param index The positional index of the historical event leaf.
+     * @returns An ordered array of proof steps required to verify the leaf.
+     * @throws Error if the requested index falls outside current ledger boundaries.
      */
-    private buildTree(hashes: string[]): string {
-        const firstElement = hashes[0];
-
-        // Base case: we have reached the root node safely
-        if (hashes.length === 1 && firstElement !== undefined) {
-            return firstElement;
+    public generateProof(index: number): MerkleProofStep[] {
+        if (index < 0 || index >= this.leafHashes.length) {
+            throw new Error("Index out of bounds for cryptographic proof generation.");
         }
 
-        const nextLevel: string[] = [];
-        
-        // Pair up adjacent hashes and hash them together
-        for (let i = 0; i < hashes.length; i += 2) {
-            const leftChild = hashes[i];
-            const rightChild = hashes[i + 1];
-            
-            // Explicitly assert existence via type guards to bypass noUncheckedIndexedAccess
-            if (leftChild !== undefined) {
-                const actualRight = rightChild !== undefined ? rightChild : leftChild;
-                nextLevel.push(this.hashNode(leftChild + actualRight));
+        const proof: MerkleProofStep[] = [];
+        let currentLevelHashes = [...this.leafHashes];
+        let targetIndex = index;
+
+        while (currentLevelHashes.length > 1) {
+            const nextLevelHashes: string[] = [];
+
+            for (let i = 0; i < currentLevelHashes.length; i += 2) {
+                const leftChild = currentLevelHashes[i];
+                const rightChild = currentLevelHashes[i + 1];
+
+                if (leftChild !== undefined) {
+                    const actualRight = rightChild !== undefined ? rightChild : leftChild;
+                    nextLevelHashes.push(this.hashNode(leftChild + actualRight));
+
+                    // Evaluate if the current iteration boundary holds our target path node
+                    if (targetIndex === i) {
+                        proof.push({ position: 'right', hash: actualRight });
+                    } else if (targetIndex === i + 1) {
+                        proof.push({ position: 'left', hash: leftChild });
+                    }
+                }
             }
+
+            currentLevelHashes = nextLevelHashes;
+            targetIndex = Math.floor(targetIndex / 2);
         }
 
-        // Move up one level in the tree recursively
-        return this.buildTree(nextLevel);
+        return proof;
     }
 
     /**
-     * Standardized SHA-256 hashing utility for tree nodes.
+     * Standardized SHA-256 hashing utility for individual string data segments.
      */
-    private hashNode(data: string): string {
+    public hashNode(data: string): string {
         return createHash('sha256').update(data).digest('hex');
     }
 
