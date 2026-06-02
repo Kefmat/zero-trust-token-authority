@@ -2,12 +2,13 @@ import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 import { MerkleProofValidator } from './primitives/proofs.js';
+import { TokenRevocationRegistry } from './primitives/revocation.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against real-time network attack vectors.
  * @author Kefmat
- * @version 1.1.0
+ * @version 1.2.0
  */
 class AccessOrchestrator {
     /**
@@ -21,6 +22,7 @@ class AccessOrchestrator {
         // 1. Core Infrastructure Initialization
         const ledger = new MerkleLedger();
         const keyMatrix = new KeyMatrix(3600000); // 1-hour lifespan configuration
+        const revocationRegistry = new TokenRevocationRegistry();
         
         let initialRoot = ledger.computeRootState();
         console.log(`[Ledger] Genesis State Hash: ${initialRoot}`);
@@ -87,9 +89,13 @@ class AccessOrchestrator {
             );
 
             console.log("[Resource Server] Evaluating token payload and possession signature...");
-            const parsedToken = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
-            const resourceThumbprint = TokenEngine.verifyClientDPoPProof(apiProof, apiMethod, apiUrl);
+            let parsedToken = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
+            let resourceThumbprint = TokenEngine.verifyClientDPoPProof(apiProof, apiMethod, apiUrl);
 
+            // Strict parameter assertions
+            if (revocationRegistry.isRevoked(parsedToken.jti)) {
+                throw new Error("Access Denied: Token has been revoked explicitly.");
+            }
             if (parsedToken.cnf.jkt !== resourceThumbprint) {
                 throw new Error("Access Denied: Token thumbprint binding mismatch.");
             }
@@ -112,6 +118,9 @@ class AccessOrchestrator {
                 const parsedRogueToken = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
                 const rogueThumbprint = TokenEngine.verifyClientDPoPProof(rogueApiProof, apiMethod, apiUrl);
 
+                if (revocationRegistry.isRevoked(parsedRogueToken.jti)) {
+                    throw new Error("REVOCATION_REJECTED: Present token identifier is flag-revoked.");
+                }
                 if (parsedRogueToken.cnf.jkt !== rogueThumbprint) {
                     throw new Error("REPLAY_REJECTED: Stolen token is not cryptographically bound to this node's keypair.");
                 }
@@ -120,12 +129,41 @@ class AccessOrchestrator {
                 console.log(`[DEFENSE SUCCESS] Resource Server blocked threat. Reason: ${err.message}\n`);
             }
 
-            // 6. Administrative Automated Key Rotation Event
+            // 6. Administrative Revocation Phase
+            console.log("[IdP] Security Advisory: Explicitly revoking token identifier due to session termination...");
+            const blindedRevocationHash = revocationRegistry.revokeToken(parsedToken.jti);
+            console.log(`[IdP] Token successfully invalidated. Blinded Register Hash: ${blindedRevocationHash}`);
+
+            const revokeEvent: LedgerEvent = {
+                eventId: `EVT-${Date.now()}-003`,
+                timestamp: new Date().toISOString(),
+                action: 'TOKEN_REVOKED',
+                details: { jtiBlinded: blindedRevocationHash, reason: "USER_LOGOUT_SIGNAL" }
+            };
+            currentRoot = ledger.appendEvent(revokeEvent);
+            console.log(`[Ledger] Revocation state committed. Merkle Root updated to: ${currentRoot}\n`);
+
+            // 7. Verification of Post-Revocation Access Blocking
+            console.log("[Client] Attempting to access protected API again using the revoked token...");
+            try {
+                console.log("[Resource Server] Intercepting request and validating status mapping...");
+                const verifiedPayload = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
+                
+                // Assert check against the out-of-band revocation map
+                if (revocationRegistry.isRevoked(verifiedPayload.jti)) {
+                    throw new Error("REVOCATION_ENFORCED: Token unique signature matching a known blacklisted registration entry.");
+                }
+                console.log("[CRITICAL ALERT] Integrity failure. Revoked token permitted access.");
+            } catch (error: any) {
+                console.log(`[DEFENSE SUCCESS] Resource Server successfully blocked access. Reason: ${error.message}\n`);
+            }
+
+            // 8. Administrative Automated Key Rotation Event
             console.log("[IdP] Lifetime trigger: Initializing automated authority key rotation routine...");
             const rotatedKey = keyMatrix.rotateKey();
             
             const rotateEvent: LedgerEvent = {
-                eventId: `EVT-${Date.now()}-003`,
+                eventId: `EVT-${Date.now()}-004`,
                 timestamp: new Date().toISOString(),
                 action: 'KEY_ROTATION',
                 details: { kid: rotatedKey.kid, reason: "AUTOMATED_ROTATION_INTERVAL" }
@@ -133,11 +171,10 @@ class AccessOrchestrator {
             currentRoot = ledger.appendEvent(rotateEvent);
             console.log(`[Ledger] Rotation committed. Merkle Root locked at: ${currentRoot}\n`);
 
-            // 7. Out-of-Band Audit Trail Verification Routine
+            // 9. Out-of-Band Audit Trail Verification Routine
             console.log("[Compliance Server] Initiating disconnected historical validation routine...");
             console.log("[Compliance Server] Fetching authorization event info and targeted proof data path...");
             
-            // Validate the Token Issuance event (index 1 in the ledger trail)
             const targetEventIndex = 1;
             const targetEvent = ledger.getAuditTrail()[targetEventIndex];
             
@@ -165,7 +202,7 @@ class AccessOrchestrator {
             console.error(`[CRITICAL SIMULATION ERROR] Pipeline failed: ${error.message}`);
         }
 
-        // 8. Core Cryptographic Ledger Audit Review
+        // 10. Core Cryptographic Ledger Audit Review
         console.log("=================================================");
         console.log("         Final Cryptographic State Audit         ");
         console.log("=================================================");
