@@ -1,4 +1,4 @@
-import { MerkleLedger, LedgerEvent } from './primitives/ledger.js';
+import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 
