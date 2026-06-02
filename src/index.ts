@@ -1,12 +1,13 @@
 import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
+import { MerkleProofValidator } from './primitives/proofs.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against real-time network attack vectors.
- * * @author Kefmat
- * @version 1.0.0
+ * @author Kefmat
+ * @version 1.1.0
  */
 class AccessOrchestrator {
     /**
@@ -74,7 +75,7 @@ class AccessOrchestrator {
             console.log(`[Ledger] Event committed. Merkle Root updated to: ${currentRoot}\n`);
 
             // 4. Resource Access Phase (Successful Scenario)
-            console.log("[Client] Accessing protected business API with bound token...");
+            console.log("[Client] Accessing protected business API with bound token... ");
             const apiMethod = "GET";
             const apiUrl = "https://api.enterprise.internal/v1/metrics";
             
@@ -132,11 +133,39 @@ class AccessOrchestrator {
             currentRoot = ledger.appendEvent(rotateEvent);
             console.log(`[Ledger] Rotation committed. Merkle Root locked at: ${currentRoot}\n`);
 
+            // 7. Out-of-Band Audit Trail Verification Routine
+            console.log("[Compliance Server] Initiating disconnected historical validation routine...");
+            console.log("[Compliance Server] Fetching authorization event info and targeted proof data path...");
+            
+            // Validate the Token Issuance event (index 1 in the ledger trail)
+            const targetEventIndex = 1;
+            const targetEvent = ledger.getAuditTrail()[targetEventIndex];
+            
+            if (targetEvent !== undefined) {
+                const computedLeafHash = ledger.hashNode(JSON.stringify(targetEvent));
+                const mathematicalProofPath = ledger.generateProof(targetEventIndex);
+                
+                console.log(`[Compliance Server] Target Event ID to verify: ${targetEvent.eventId}`);
+                console.log(`[Compliance Server] Proof Path Node Array Count: ${mathematicalProofPath.length}`);
+                
+                const isStateValid = MerkleProofValidator.verify(
+                    currentRoot,
+                    computedLeafHash,
+                    mathematicalProofPath
+                );
+
+                if (isStateValid) {
+                    console.log("[AUDIT SUCCESS] Out-of-band audit verified: Event entry integrity verified.\n");
+                } else {
+                    console.log("[AUDIT FAILURE] Warning: Mutated ledger transaction detected.\n");
+                }
+            }
+
         } catch (error: any) {
             console.error(`[CRITICAL SIMULATION ERROR] Pipeline failed: ${error.message}`);
         }
 
-        // 7. Core Cryptographic Ledger Audit Review
+        // 8. Core Cryptographic Ledger Audit Review
         console.log("=================================================");
         console.log("         Final Cryptographic State Audit         ");
         console.log("=================================================");
