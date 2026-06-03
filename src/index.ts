@@ -1,15 +1,17 @@
+import { createHash } from 'node:crypto';
 import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 import { MerkleProofValidator } from './primitives/proofs.js';
 import { TokenRevocationRegistry } from './primitives/revocation.js';
 import { JwksDistributor, RemoteKeyResolver } from './primitives/jwks.js';
+import { BloomFilterAccumulator } from './primitives/accumulator.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against real-time network attack vectors.
  * @author Kefmat
- * @version 1.3.0
+ * @version 1.4.0
  */
 class AccessOrchestrator {
     /**
@@ -24,6 +26,7 @@ class AccessOrchestrator {
         const ledger = new MerkleLedger();
         const keyMatrix = new KeyMatrix(3600000); // 1-hour lifespan configuration
         const revocationRegistry = new TokenRevocationRegistry();
+        const edgeAccumulator = new BloomFilterAccumulator(128, 4);
         
         // Network Distribution Layers
         const jwksDistributor = new JwksDistributor();
@@ -99,13 +102,19 @@ class AccessOrchestrator {
 
             console.log("[Resource Server] Evaluating token payload and possession signature...");
             
-            // NOTE FOR THE NEXT PROGRAMMER: The Resource Server extracts the kid header unverified,
-            // then dynamically requests the matching certificate component across the network boundary via JWKS.
             const rawDecoded = JSON.parse(Buffer.from(accessToken, 'base64url').toString('utf8')) as { payload: { kid: string } };
             const resolvedAuthorityKey = remoteKeyResolver.resolvePublicKeyPem(rawDecoded.payload.kid);
             
             let parsedToken = TokenEngine.verifyAccessToken(accessToken, resolvedAuthorityKey);
             let resourceThumbprint = TokenEngine.verifyClientDPoPProof(apiProof, apiMethod, apiUrl);
+
+            // Tier 1 Fast-Path Validation Check
+            const initialBlindJti = createHash('sha256').update(parsedToken.jti).digest('hex');
+            if (edgeAccumulator.mayContain(initialBlindJti)) {
+                console.log("[Resource Server] Local accumulator hit. Intercepting for Tier 2 evaluation...");
+            } else {
+                console.log("[Resource Server] Fast-path complete: Local accumulator confirms token is active.");
+            }
 
             // Strict parameter assertions
             if (revocationRegistry.isRevoked(parsedToken.jti)) {
@@ -159,9 +168,14 @@ class AccessOrchestrator {
                 details: { jtiBlinded: blindedRevocationHash, reason: "USER_LOGOUT_SIGNAL" }
             };
             currentRoot = ledger.appendEvent(revokeEvent);
-            console.log(`[Ledger] Revocation state committed. Merkle Root updated to: ${currentRoot}\n`);
+            const revokeEventIndex = ledger.getAuditTrail().length - 1;
+            console.log(`[Ledger] Revocation state committed. Merkle Root updated to: ${currentRoot}`);
 
-            // 7. Verification of Post-Revocation Access Blocking
+            // Synchronize the edge gateway accumulator state out-of-band
+            edgeAccumulator.add(blindedRevocationHash);
+            console.log("[IdP -> Edge] State synchronized: Edge accumulator bit pattern updated.\n");
+
+            // 7. Verification of Post-Revocation Access Blocking via Tiered Fallback
             console.log("[Client] Attempting to access protected API again using the revoked token...");
             try {
                 console.log("[Resource Server] Intercepting request and validating status mapping...");
@@ -169,10 +183,26 @@ class AccessOrchestrator {
                 const reVerifyKey = remoteKeyResolver.resolvePublicKeyPem(reVerifyDecoded.payload.kid);
                 
                 const verifiedPayload = TokenEngine.verifyAccessToken(accessToken, reVerifyKey);
+                const currentBlindJti = createHash('sha256').update(verifiedPayload.jti).digest('hex');
                 
-                if (revocationRegistry.isRevoked(verifiedPayload.jti)) {
-                    throw new Error("REVOCATION_ENFORCED: Token unique signature matching a known blacklisted registration entry.");
+                // NOTE FOR THE NEXT PROGRAMMER: Tiered revocation check starts here.
+                // If Tier 1 matches, we fall back to confirming the status using a historic Merkle Proof path check.
+                if (edgeAccumulator.mayContain(currentBlindJti)) {
+                    console.log("[Resource Server] Local accumulator match detected. Invoking Tier 2 cryptographic fallback...");
+                    
+                    const mathematicalProofPath = ledger.generateProof(revokeEventIndex);
+                    const historicalEvent = ledger.getAuditTrail()[revokeEventIndex];
+                    
+                    if (historicalEvent !== undefined) {
+                        const computedLeafHash = ledger.hashNode(JSON.stringify(historicalEvent));
+                        const isRevocationProven = MerkleProofValidator.verify(currentRoot, computedLeafHash, mathematicalProofPath);
+                        
+                        if (isRevocationProven && historicalEvent.action === 'TOKEN_REVOKED' && historicalEvent.details['jtiBlinded'] === currentBlindJti) {
+                            throw new Error("TIER_2_REVOCATION_ENFORCED: Token transaction matched an audit-proven revocation event entry.");
+                        }
+                    }
                 }
+                
                 console.log("[CRITICAL ALERT] Integrity failure. Revoked token permitted access.");
             } catch (error: any) {
                 console.log(`[DEFENSE SUCCESS] Resource Server successfully blocked access. Reason: ${error.message}\n`);
