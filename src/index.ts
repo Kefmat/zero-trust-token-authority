@@ -3,12 +3,13 @@ import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 import { MerkleProofValidator } from './primitives/proofs.js';
 import { TokenRevocationRegistry } from './primitives/revocation.js';
+import { JwksDistributor, RemoteKeyResolver } from './primitives/jwks.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against real-time network attack vectors.
  * @author Kefmat
- * @version 1.2.0
+ * @version 1.3.0
  */
 class AccessOrchestrator {
     /**
@@ -24,10 +25,18 @@ class AccessOrchestrator {
         const keyMatrix = new KeyMatrix(3600000); // 1-hour lifespan configuration
         const revocationRegistry = new TokenRevocationRegistry();
         
+        // Network Distribution Layers
+        const jwksDistributor = new JwksDistributor();
+        const remoteKeyResolver = new RemoteKeyResolver(jwksDistributor);
+        
         let initialRoot = ledger.computeRootState();
         console.log(`[Ledger] Genesis State Hash: ${initialRoot}`);
 
         const initialKey = keyMatrix.getActiveKey();
+        
+        // Register the primary key to the public web registry
+        jwksDistributor.registerPublicKey(initialKey.kid, initialKey.publicKey);
+
         const initEvent: LedgerEvent = {
             eventId: `EVT-${Date.now()}-001`,
             timestamp: new Date().toISOString(),
@@ -89,7 +98,13 @@ class AccessOrchestrator {
             );
 
             console.log("[Resource Server] Evaluating token payload and possession signature...");
-            let parsedToken = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
+            
+            // NOTE FOR THE NEXT PROGRAMMER: The Resource Server extracts the kid header unverified,
+            // then dynamically requests the matching certificate component across the network boundary via JWKS.
+            const rawDecoded = JSON.parse(Buffer.from(accessToken, 'base64url').toString('utf8')) as { payload: { kid: string } };
+            const resolvedAuthorityKey = remoteKeyResolver.resolvePublicKeyPem(rawDecoded.payload.kid);
+            
+            let parsedToken = TokenEngine.verifyAccessToken(accessToken, resolvedAuthorityKey);
             let resourceThumbprint = TokenEngine.verifyClientDPoPProof(apiProof, apiMethod, apiUrl);
 
             // Strict parameter assertions
@@ -103,7 +118,7 @@ class AccessOrchestrator {
 
             // 5. Adversarial Vector Simulation (Token Replay Attack)
             console.log("[Simulation] Adversary intercepts the bearer access token from network wire...");
-            console.log("[Simulation] Adversary attempts to replay token from independent rogue node...");
+            console.log("[Simulation] Adversary attempts to replay token from independent rogue node... ");
             
             const rogueKeys = TokenEngine.generateClientKeys();
             const rogueApiProof = TokenEngine.createClientDPoPProof(
@@ -115,7 +130,10 @@ class AccessOrchestrator {
 
             try {
                 console.log("[Resource Server] Processing payload request from adversarial source...");
-                const parsedRogueToken = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
+                const adversarialDecoded = JSON.parse(Buffer.from(accessToken, 'base64url').toString('utf8')) as { payload: { kid: string } };
+                const advResolvedKey = remoteKeyResolver.resolvePublicKeyPem(adversarialDecoded.payload.kid);
+                
+                const parsedRogueToken = TokenEngine.verifyAccessToken(accessToken, advResolvedKey);
                 const rogueThumbprint = TokenEngine.verifyClientDPoPProof(rogueApiProof, apiMethod, apiUrl);
 
                 if (revocationRegistry.isRevoked(parsedRogueToken.jti)) {
@@ -147,9 +165,11 @@ class AccessOrchestrator {
             console.log("[Client] Attempting to access protected API again using the revoked token...");
             try {
                 console.log("[Resource Server] Intercepting request and validating status mapping...");
-                const verifiedPayload = TokenEngine.verifyAccessToken(accessToken, activeAuthKey.publicKey);
+                const reVerifyDecoded = JSON.parse(Buffer.from(accessToken, 'base64url').toString('utf8')) as { payload: { kid: string } };
+                const reVerifyKey = remoteKeyResolver.resolvePublicKeyPem(reVerifyDecoded.payload.kid);
                 
-                // Assert check against the out-of-band revocation map
+                const verifiedPayload = TokenEngine.verifyAccessToken(accessToken, reVerifyKey);
+                
                 if (revocationRegistry.isRevoked(verifiedPayload.jti)) {
                     throw new Error("REVOCATION_ENFORCED: Token unique signature matching a known blacklisted registration entry.");
                 }
@@ -161,6 +181,10 @@ class AccessOrchestrator {
             // 8. Administrative Automated Key Rotation Event
             console.log("[IdP] Lifetime trigger: Initializing automated authority key rotation routine...");
             const rotatedKey = keyMatrix.rotateKey();
+            
+            // Publish the newly minted public key onto the dynamic endpoint directory
+            jwksDistributor.registerPublicKey(rotatedKey.kid, rotatedKey.publicKey);
+            console.log(`[IdP] Authoritative network endpoint synchronized with fresh Key ID: ${rotatedKey.kid}`);
             
             const rotateEvent: LedgerEvent = {
                 eventId: `EVT-${Date.now()}-004`,
