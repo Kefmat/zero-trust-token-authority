@@ -2,8 +2,12 @@ import { createHash } from 'node:crypto';
 
 /**
  * A space-efficient cryptographic accumulator implementing a deterministic Bloom Filter.
- * Used at edge locations to evaluate token revocation with minimal memory footprint.
- * @author Kefmat
+ * Used at edge gateway locations to evaluate token revocation status with minimal memory overhead.
+ * * NOTE FOR THE NEXT PROGRAMMER: This accumulator optimizes local lookup performance.
+ * It features zero false negatives: if a token has not been added, mayContain() is guaranteed 
+ * to return false. If it returns true, a false-positive is statistically possible, meaning the 
+ * system must fallback to Tier 2 out-of-band Merkle proof verification to confirm the status.
+ * * @author Kefmat
  * @version 1.0.0
  */
 export class BloomFilterAccumulator {
@@ -12,19 +16,19 @@ export class BloomFilterAccumulator {
     private hashIterations: number;
 
     /**
-     * Constructs the accumulator with fixed dimensional boundaries.
-     * @param sizeInBytes The memory allocation block size (e.g., 1024 bytes = 8192 bits).
-     * @param hashIterations The number of independent salting functions to execute per lookup.
+     * Constructs the accumulator with fixed bit-space dimensions.
+     * @param sizeInBytes The memory allocation block size (e.g., 128 bytes = 1024 bits).
+     * @param hashIterations The number of independent salting passes executed per lookup.
      */
-    constructor(sizeInBytes: number = 256, hashIterations: number = 4) {
+    constructor(sizeInBytes: number = 128, hashIterations: number = 4) {
         this.bitmask = new Uint8Array(sizeInBytes);
         this.sizeInBits = sizeInBytes * 8;
         this.hashIterations = hashIterations;
     }
 
     /**
-     * Accumulates a cryptographically blinded token tracking hash into the bit pattern matrix.
-     * @param blindedJti The SHA-256 string hash of the unique token identifier.
+     * Accumulates a cryptographically blinded token tracking hash into the bit array matrix.
+     * @param blindedJti The SHA-256 hex string representation of the unique token identifier.
      */
     public add(blindedJti: string): void {
         const indices = this.computeBitPositions(blindedJti);
@@ -40,12 +44,9 @@ export class BloomFilterAccumulator {
     }
 
     /**
-     * Checks if a specific token identifier matches the revocation bit signature space.
-     * NOTE FOR THE NEXT PROGRAMMER: This function yields zero false negatives. If it returns false, 
-     * the token is definitively valid. If it returns true, there is a small probability of a false positive, 
-     * requiring the upstream consumer to perform a tiered validation fallback query.
-     * @param blindedJti The SHA-256 string hash of the unique token identifier.
-     * @returns True if the identifier is probably revoked, false if it is definitely active.
+     * Evaluates whether a specific token hash matches the current bit distribution footprint.
+     * @param blindedJti The SHA-256 hex string representation of the unique token identifier.
+     * @returns True if the token is likely revoked (Tier 2 required), false if definitively valid.
      */
     public mayContain(blindedJti: string): boolean {
         const indices = this.computeBitPositions(blindedJti);
@@ -62,8 +63,7 @@ export class BloomFilterAccumulator {
     }
 
     /**
-     * Generates a deterministic array of target bit index mappings for a given string input.
-     * Uses dynamic loop salting to create multiple distinct bit positions from a single crypto provider.
+     * Computes deterministic bit array offsets utilizing distinct salt mutations.
      */
     private computeBitPositions(input: string): number[] {
         const positions: number[] = [];
@@ -73,18 +73,11 @@ export class BloomFilterAccumulator {
                 .update(`salt-${i}-${input}`)
                 .digest();
             
-            // Read first 4 bytes as an unsigned 32-bit big-endian integer for the index position
+            // Read leading 4 bytes as an unsigned 32-bit big-endian integer for the matrix coordinates
             const value = hash.readUInt32BE(0);
             positions.push(value % this.sizeInBits);
         }
         
         return positions;
-    }
-
-    /**
-     * Exports a copy of the underlying bitmask container for out-of-band system syncing.
-     */
-    public exportBitmask(): Uint8Array {
-        return new Uint8Array(this.bitmask);
     }
 }
