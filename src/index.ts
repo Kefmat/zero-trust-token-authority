@@ -13,7 +13,7 @@ import { CryptographicNonceEngine } from './primitives/nonce.js';
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.7.0
+ * @version 1.7.1
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
@@ -102,8 +102,6 @@ class AccessOrchestrator {
         // 5. Client Recovery Phase (Resubmitting with Nonce Integration)
         console.log("\n[Client] Extracting server-issued nonce token and constructing fresh DPoP proof context...");
         
-        // NOTE FOR THE NEXT PROGRAMMER: The client must append the server's nonce to the DPoP payload 
-        // to complete the mutual cryptographic binding loop.
         const dynamicNonceProof = TokenEngine.createClientDPoPProof(
             clientKeys.privateKey,
             clientKeys.publicKey,
@@ -113,14 +111,22 @@ class AccessOrchestrator {
 
         // Parse token and decode internal segments to manually update proof with nonce string
         const parsedProofSegments = dynamicNonceProof.split('.');
-        const proofPayloadDecoded = JSON.parse(Buffer.from(parsedProofSegments[1], 'base64url').toString('utf8'));
+        const headerSegment = parsedProofSegments[0];
+        const payloadSegment = parsedProofSegments[1];
+        
+        // NOTE FOR THE NEXT PROGRAMMER: Explicitly validate array index bounds to satisfy strict
+        // compiler checks (e.g., noUncheckedIndexedAccess) before feeding into Buffer primitives.
+        if (headerSegment === undefined || payloadSegment === undefined) {
+            throw new Error("SIMULATION_ERROR: Failed to slice initial token segments correctly.");
+        }
+
+        const proofPayloadDecoded = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8'));
         proofPayloadDecoded.nonce = generatedServerNonce; // Dynamic mutation to simulate nonce inclusion
         
         const updatedPayloadEncoded = Buffer.from(JSON.stringify(proofPayloadDecoded)).toString('base64url');
         const recompiledSignature = createHmac('sha256', 'mock-client-proof-signing-pass')
-            .update(`${parsedProofSegments[0]}.${updatedPayloadEncoded}`)
+            .update(`${headerSegment}.${updatedPayloadEncoded}`)
             .digest('base64url');
-        const finalNonceBoundProof = `${parsedProofSegments[0]}.${updatedPayloadEncoded}.${recompiledSignature}`;
 
         console.log("[Client -> Server] Re-submitting request with nonce-bound DPoP confirmation...");
         console.log("[Resource Server] Intercepting pipeline: evaluating state boundaries and proof nonces...");
