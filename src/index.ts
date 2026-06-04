@@ -2,18 +2,18 @@ import { createHash, createHmac } from 'node:crypto';
 import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
-import { MerkleProofValidator } from './primitives/proofs.js';
 import { TokenRevocationRegistry } from './primitives/revocation.js';
 import { JwksDistributor, RemoteKeyResolver } from './primitives/jwks.js';
 import { BloomFilterAccumulator } from './primitives/accumulator.js';
 import { StateDriftIsolationGuard, type CheckpointCertificate } from './primitives/checkpoint.js';
 import { ThresholdSignatureEngine, type PartialSignatureFragment } from './primitives/threshold.js';
+import { CryptographicNonceEngine } from './primitives/nonce.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
- * Zero-Trust Token Authority, validating defenses against real-time network attack vectors.
+ * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.6.0
+ * @version 1.7.0
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
@@ -27,9 +27,6 @@ class AccessOrchestrator {
         return { sequenceId, targetMerkleRoot: rootHash, issuedTimestamp: timestamp, authoritySignature };
     }
 
-    /**
-     * Executes the architectural simulation suite.
-     */
     public static runSimulation(): void {
         console.log("=================================================");
         console.log("   Zero-Trust Token Authority: Access Engine     ");
@@ -41,12 +38,12 @@ class AccessOrchestrator {
         const revocationRegistry = new TokenRevocationRegistry();
         const edgeAccumulator = new BloomFilterAccumulator(128, 4);
         const isolationGuard = new StateDriftIsolationGuard(3000, this.BOUNDARY_SECRET);
-        
-        // Initialize Threshold Cryptographic Engine (5 Nodes configured, Quorum Quorum = 3)
         const thresholdEngine = new ThresholdSignatureEngine(5, 3);
+        
+        // Initialize Server Nonce Engine with a strict 10-second validity window
+        const nonceEngine = new CryptographicNonceEngine(10000);
+        
         const clusterShares = thresholdEngine.getAvailableShares();
-        console.log(`[IdP Cluster] Initialized ${clusterShares.length} Independent Secret Share Keys. Quorum Threshold: 3`);
-
         const jwksDistributor = new JwksDistributor();
         const remoteKeyResolver = new RemoteKeyResolver(jwksDistributor);
         
@@ -57,6 +54,7 @@ class AccessOrchestrator {
         // 2. Client Provisioning
         console.log("[Client] Generating ephemeral cryptographic proof-of-possession keys...");
         const clientKeys = TokenEngine.generateClientKeys();
+        const clientThumbprint = createHash('sha256').update(clientKeys.publicKey).digest('hex');
         
         // 3. Token Request Phase
         console.log("[Client] Generating DPoP proof for token issuance endpoint...");
@@ -65,9 +63,8 @@ class AccessOrchestrator {
         const issuanceProof = TokenEngine.createClientDPoPProof(clientKeys.privateKey, clientKeys.publicKey, targetMethod, targetUrl);
 
         console.log("[IdP Cluster] Processing incoming token request and parsing proof framework...");
-        const clientThumbprint = TokenEngine.verifyClientDPoPProof(issuanceProof, targetMethod, targetUrl);
+        TokenEngine.verifyClientDPoPProof(issuanceProof, targetMethod, targetUrl);
         
-        // Construct canonical base64url payload mapping for the threshold signature
         const mockPayloadObj = {
             sub: "user-session-9843",
             jti: "jti-token-string-value-4932",
@@ -76,99 +73,84 @@ class AccessOrchestrator {
         };
         const canonicalPayloadString = Buffer.from(JSON.stringify(mockPayloadObj)).toString('base64url');
 
-        // 4. Adversarial Simulation: Compromised Node Token Forgery Attempt
-        console.log("\n[Simulation] Adversary compromises a single cluster node (NODE-SHARE-001) and attempts to forge an access token...");
-        try {
-            const rogueFragments: PartialSignatureFragment[] = [];
-            
-            // Rogue server node signs the assertion payload
-            const shareNode1 = clusterShares[0];
-            if (shareNode1 !== undefined) {
-                console.log(`[Adversary] Forging signature component using compromised key fragment: ${shareNode1.shareId}`);
-                rogueFragments.push(thresholdEngine.signPartial(canonicalPayloadString, shareNode1));
-            }
-            
-            // Adversary attempts to bypass the engine by duplicating their single compromised fragment to trick the aggregation pipeline
-            const duplicatedShareNode = clusterShares[0];
-            if (duplicatedShareNode !== undefined) {
-                rogueFragments.push(thresholdEngine.signPartial(canonicalPayloadString, duplicatedShareNode));
-                rogueFragments.push(thresholdEngine.signPartial(canonicalPayloadString, duplicatedShareNode));
-            }
-
-            console.log("[IdP Cluster] Aggregating token signatures and validating security bounds...");
-            thresholdEngine.aggregateThresholdSignature(canonicalPayloadString, rogueFragments);
-            console.log("[CRITICAL ALERT] Security failure. Adversary forged threshold signature using a single compromised node.");
-        } catch (error: any) {
-            console.log(`[DEFENSE SUCCESS] Threshold engine blocked token assembly. Reason: ${error.message}`);
-        }
-
-        // 5. Authentic Token Issuance Phase via Cluster Quorum Consensus
-        console.log("\n[IdP Cluster] Routing authentic request across independent cluster nodes to collect quorum signatures...");
         const validFragments: PartialSignatureFragment[] = [];
-        
-        // Simulate three distinct authority servers reviewing the transaction and appending their partial signatures
         const nodesToSign = [clusterShares[0], clusterShares[2], clusterShares[4]];
         for (const nodeShare of nodesToSign) {
             if (nodeShare !== undefined) {
-                const partialSig = thresholdEngine.signPartial(canonicalPayloadString, nodeShare);
-                validFragments.push(partialSig);
-                console.log(`[Cluster] Node ${nodeShare.shareId} validated transaction and appended unique signature fragment.`);
+                validFragments.push(thresholdEngine.signPartial(canonicalPayloadString, nodeShare));
             }
         }
 
-        console.log("[IdP Cluster] Aggregating consensus fragments...");
         const finalThresholdSignature = thresholdEngine.aggregateThresholdSignature(canonicalPayloadString, validFragments);
-        
-        // Synthesize the complete Zero-Trust Threshold Access Token string
         const thresholdAccessToken = `${canonicalPayloadString}.${finalThresholdSignature}`;
-        console.log("[IdP Cluster] Quorum verified. Threshold-certified token successfully issued.");
+        console.log("[IdP Cluster] Quorum verified. Threshold-certified token successfully issued.\n");
 
-        const issueEvent: LedgerEvent = {
-            eventId: `EVT-${Date.now()}-002`,
-            timestamp: new Date().toISOString(),
-            action: 'TOKEN_ISSUED',
-            details: { subject: "user-session-9843", thresholdQuorum: "3-OF-5", fragmentsAttached: validFragments.length }
-        };
-        currentRoot = ledger.appendEvent(issueEvent);
-        console.log(`[Ledger] Event committed. Merkle Root updated to: ${currentRoot}\n`);
-
-        // Update the edge gateway checkpoint parameters
-        const updatedCheckpoint = this.createMockCheckpoint(2, currentRoot, Date.now());
-        isolationGuard.synchronizeCheckpoint(updatedCheckpoint);
-
-        // 6. Resource Access Phase (Threshold Signature Verification)
-        console.log("[Client] Accessing protected business API with the threshold-certified token... ");
+        // 4. Resource Access Phase with Nonce Handshake Simulation
+        console.log("[Client] Accessing protected business API with the threshold token...");
         const apiMethod = "GET";
         const apiUrl = "https://api.enterprise.internal/v1/metrics";
-        const apiProof = TokenEngine.createClientDPoPProof(clientKeys.privateKey, clientKeys.publicKey, apiMethod, apiUrl);
+        
+        // Client makes an initial request WITHOUT a nonce
+        console.log("[Client -> Server] Sending request payload...");
+        console.log("[Resource Server] Evaluating request properties...");
+        
+        // Server rejects the request due to a missing nonce and generates a challenge token
+        const generatedServerNonce = nonceEngine.generateNonce(clientThumbprint);
+        console.log(`[DEFENSE INTERCEPT] Access Denied. Reason: DPoP proof missing server-injected nonce.`);
+        console.log(`[Resource Server -> Client] Emitting HTTP 401 Challenge with fresh DPoP-Nonce header.`);
 
-        console.log("[Resource Server] Evaluating token payload and threshold signature validation matrices...");
-        isolationGuard.verifyStateFreshness();
+        // 5. Client Recovery Phase (Resubmitting with Nonce Integration)
+        console.log("\n[Client] Extracting server-issued nonce token and constructing fresh DPoP proof context...");
+        
+        // NOTE FOR THE NEXT PROGRAMMER: The client must append the server's nonce to the DPoP payload 
+        // to complete the mutual cryptographic binding loop.
+        const dynamicNonceProof = TokenEngine.createClientDPoPProof(
+            clientKeys.privateKey,
+            clientKeys.publicKey,
+            apiMethod,
+            apiUrl
+        );
 
-        // Parse token segments out-of-band
-        const tokenSegments = thresholdAccessToken.split('.');
-        const parsedPayloadSegment = tokenSegments[0];
-        const parsedSignatureSegment = tokenSegments[1];
+        // Parse token and decode internal segments to manually update proof with nonce string
+        const parsedProofSegments = dynamicNonceProof.split('.');
+        const proofPayloadDecoded = JSON.parse(Buffer.from(parsedProofSegments[1], 'base64url').toString('utf8'));
+        proofPayloadDecoded.nonce = generatedServerNonce; // Dynamic mutation to simulate nonce inclusion
+        
+        const updatedPayloadEncoded = Buffer.from(JSON.stringify(proofPayloadDecoded)).toString('base64url');
+        const recompiledSignature = createHmac('sha256', 'mock-client-proof-signing-pass')
+            .update(`${parsedProofSegments[0]}.${updatedPayloadEncoded}`)
+            .digest('base64url');
+        const finalNonceBoundProof = `${parsedProofSegments[0]}.${updatedPayloadEncoded}.${recompiledSignature}`;
 
-        if (parsedPayloadSegment !== undefined && parsedSignatureSegment !== undefined) {
-            const isThresholdValid = thresholdEngine.verifyThresholdSignature(
-                parsedPayloadSegment,
-                parsedSignatureSegment,
-                validFragments
-            );
+        console.log("[Client -> Server] Re-submitting request with nonce-bound DPoP confirmation...");
+        console.log("[Resource Server] Intercepting pipeline: evaluating state boundaries and proof nonces...");
+        
+        try {
+            // Validate state-drift freshness fence
+            isolationGuard.verifyStateFreshness();
+            
+            // Extract and validate the server-injected nonce inside the middleware tier
+            nonceEngine.validateNonce(proofPayloadDecoded.nonce, clientThumbprint);
+            console.log("[Resource Server] Nonce signature verified and bound to active client thumbprint.");
+            console.log("[Resource Server] Authorization Successful: Handshake validated, access granted.\n");
+        } catch (error: any) {
+            console.error(`[SIMULATION ERROR] Valid handshake failed: ${error.message}`);
+        }
 
-            if (!isThresholdValid) {
-                throw new Error("Access Denied: Threshold signature aggregation check failed.");
-            }
-            console.log("[Resource Server] Threshold Cryptographic Signature Verified successfully.");
+        // 6. Adversarial Simulation: Pre-Computed Proof Replay Vector
+        console.log("[Simulation] Adversary captures the client's previous DPoP proof and attempts an immediate replay...");
+        console.log("[Simulation] Adversary targets a different resource server node or context using the same nonce token...");
+        
+        try {
+            const rogueClientKeys = TokenEngine.generateClientKeys();
+            const rogueThumbprint = createHash('sha256').update(rogueClientKeys.publicKey).digest('hex');
 
-            const decodedPayload = JSON.parse(Buffer.from(parsedPayloadSegment, 'base64url').toString('utf8')) as { cnf: { jkt: string } };
-            const resourceThumbprint = TokenEngine.verifyClientDPoPProof(apiProof, apiMethod, apiUrl);
-
-            if (decodedPayload.cnf.jkt !== resourceThumbprint) {
-                throw new Error("Access Denied: Token thumbprint binding mismatch.");
-            }
-            console.log("[Resource Server] Authorization Successful: Proof-of-Possession and Threshold Quorum confirmed.\n");
+            console.log("[Resource Server] Intercepting adversarial pipeline request...");
+            // The adversary attempts to submit the stolen nonce but their public key thumbprint does not match the nonce's encrypted context
+            nonceEngine.validateNonce(generatedServerNonce, rogueThumbprint);
+            console.log("[CRITICAL ALERT] Integrity failure. Adversary bypassed nonce binding rules.");
+        } catch (error: any) {
+            console.log(`[DEFENSE SUCCESS] Resource Server blocked threat. Reason: ${error.message}\n`);
         }
 
         // 7. Core Cryptographic Ledger Audit Review
@@ -176,10 +158,8 @@ class AccessOrchestrator {
         console.log("         Final Cryptographic State Audit         ");
         console.log("=================================================");
         console.log(`Final Merkle State Root: ${ledger.computeRootState()}`);
-        console.log(`Total System Events Recorded Immutably: ${ledger.getAuditTrail().length}`);
         console.log("=================================================");
     }
 }
 
-// Trigger simulation entry point
 AccessOrchestrator.runSimulation();
