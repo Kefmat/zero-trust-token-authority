@@ -88,13 +88,14 @@ alt State Drift Latency > Threshold (Network Partition Active)
     Guard-->>RS: Force ISOLATION_LOCKOUT Action
     RS-->>Client: HTTP 503 Service Unavailable (Gateway Isolated)
 else State Certified Fresh (Within Latency Threshold)
-    Guard-->>RS: Boundary Verified
-    RS->>Bloom: Query Blinded Token JTI Footprint (Tier 1 Check)
+        Guard-->>RS: Boundary Verified
+        RS->>Bloom: Query Blinded Token JTI Footprint (Tier 1 Check)
 
-    alt Bloom Filter Return: False (Cache Miss)
-        Note over RS: Token definitively active (Zero False Negatives)
-        Note over RS: Verify DPoP signature match against token binding hash
-        RS-->>Client: HTTP 200 Success (Return Resources)
+        alt Bloom Filter Return: False (Cache Miss)
+            Note over RS: Token definitively active (Zero False Negatives)
+            Note over RS: Enforce parameter matching on expected server challenge nonce
+            Note over RS: Verify DPoP signature match against token binding hash
+            RS-->>Client: HTTP 200 Success (Return Resources)
     else Bloom Filter Return: True (Potential Revocation Match / Collision)
         Note over RS: Fallback initiated to resolve false-positive risk
         RS->>Ledger: Generate mathematical verification proof path for JTI event index
@@ -118,7 +119,7 @@ end
 - `src/primitives/checkpoint.ts`: Establishes the `StateDriftIsolationGuard` middleware layer, verifying incoming authority snapshots via HMAC chains and managing edge fail-secure lockout thresholds.
 - `src/primitives/accumulator.ts`: Implements a deterministic Bloom Filter configured with multiple independent salting variations to track blinded tracking hashes within localized memory constraints.
 - `src/primitives/ledger.ts`: An append-only Merkle Tree engine computing real-time state roots and outputting audit proof nodes.
-- `src/primitives/tokens.ts`: Handles validation and mapping structures for DPoP proof-of-possession challenges and asymmetric thumbprints.
+- `src/primitives/tokens.ts`: Handles validation and mapping structures for DPoP proof-of-possession challenges and asymmetric thumbprints. **Enforces structural type-safety definitions for token assertions that explicitly support strict compilation environments configuration matrices (such as `exactOptionalPropertyTypes: true`).**
 
 ## Getting Started
 
