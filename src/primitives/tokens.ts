@@ -24,6 +24,7 @@ export interface DPoPProofPayload {
     iat: number;       // Proof issuance timestamp
     jti: string;       // Unique token identifier to prevent replay attacks
     pubKey: string;    // Client public key embedded within the proof header
+    nonce?: string;    // Optional server-issued cryptographic challenge nonce
 }
 
 /**
@@ -34,7 +35,7 @@ export interface DPoPProofPayload {
  * must remain `undefined`. This is a strict constraint of the Ed25519 standard in Node.js, as Ed25519 
  * does not support separate pre-hash digest identifiers like RSA or traditional ECDSA.
  * * @author Kefmat
- * @version 1.2.0
+ * @version 1.3.0
  */
 export class TokenEngine {
     
@@ -52,19 +53,28 @@ export class TokenEngine {
     /**
      * Synthesizes and cryptographically signs a client-side DPoP proof envelope.
      * Enforces Ed25519 compliance by supplying an undefined algorithm parameter to the signer.
+     * * NOTE FOR THE NEXT PROGRAMMER: The optional server nonce parameter must be explicitly appended
+     * to the internal payload definition to assert dynamic fresh execution boundaries.
+     * * @param clientPrivateKey The client's asymmetric signing key.
+     * @param clientPublicKey The client's public identity key to bound to the session context.
+     * @param htm The outbound request target HTTP method.
+     * @param htu The outbound request target canonical destination URL.
+     * @param nonce An optional token-bound challenge nonce issued during a 401 interception challenge loop.
      */
     public static createClientDPoPProof(
         clientPrivateKey: string,
         clientPublicKey: string,
         htm: string,
-        htu: string
+        htu: string,
+        nonce?: string
     ): string {
         const payload: DPoPProofPayload = {
             htm,
             htu,
             iat: Date.now(),
             jti: Math.random().toString(36).substring(2, 15),
-            pubKey: clientPublicKey
+            pubKey: clientPublicKey,
+            nonce: nonce || undefined
         };
 
         const serializedPayload = JSON.stringify(payload);
@@ -76,12 +86,19 @@ export class TokenEngine {
 
     /**
      * Evaluates a client DPoP proof to certify legitimacy and extract the verification tracking thumbprint.
-     * @throws Error if structural mutations, path mismatches, or signature validation failures occur.
+     * * NOTE FOR THE NEXT PROGRAMMER: If an expected nonce boundary check is supplied by the middleware context, 
+     * it must perform strict parameter matching against the internal payload to guard against cross-server replay attacks.
+     * * @param rawProof The incoming base64url-encoded proof wrapper.
+     * @param expectedHtm The targeted HTTP Method context.
+     * @param expectedHtu The targeted HTTP URI path context.
+     * @param expectedNonce An optional expected nonce challenge value required for authorization checks.
+     * @throws Error if structural mutations, path mismatches, expired TTL window, or signature validation failures occur.
      */
     public static verifyClientDPoPProof(
         rawProof: string,
         expectedHtm: string,
-        expectedHtu: string
+        expectedHtu: string,
+        expectedNonce?: string
     ): string {
         const decodedString = Buffer.from(rawProof, 'base64url').toString('utf8');
         const parsed = JSON.parse(decodedString) as { payload: DPoPProofPayload; signature: string };
@@ -90,6 +107,10 @@ export class TokenEngine {
         
         if (payload.htm !== expectedHtm || payload.htu !== expectedHtu) {
             throw new Error("DPoP integrity check failed: HTTP context mismatch.");
+        }
+
+        if (expectedNonce && payload.nonce !== expectedNonce) {
+            throw new Error("DPoP integrity check failed: Cryptographic nonce mismatch or missing.");
         }
 
         if (Date.now() - payload.iat > 60000) {
