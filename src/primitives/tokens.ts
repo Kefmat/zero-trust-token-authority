@@ -17,6 +17,8 @@ export interface AccessTokenPayload {
 
 /**
  * Structure representing an incoming client proof of possession assertion.
+ * NOTE: The `nonce` property explicitly permits `undefined` 
+ * to remain fully compatible with strict configurations enforcing `exactOptionalPropertyTypes`.
  */
 export interface DPoPProofPayload {
     htm: string;       // Target HTTP Method (e.g., GET, POST)
@@ -24,18 +26,18 @@ export interface DPoPProofPayload {
     iat: number;       // Proof issuance timestamp
     jti: string;       // Unique token identifier to prevent replay attacks
     pubKey: string;    // Client public key embedded within the proof header
-    nonce?: string;    // Optional server-issued cryptographic challenge nonce
+    nonce?: string | undefined; // Optional server-issued cryptographic challenge nonce
 }
 
 /**
  * Core cryptographic compilation layer managing token issuance and DPoP containment processing.
  * Enforces strict zero-trust validation matrices across distributed systems.
- * * NOTE FOR THE NEXT PROGRAMMER: This class leverages the raw `sign` and `verify` functional utilities 
+ * * NOTE: This class leverages the raw `sign` and `verify` functional utilities 
  * from 'node:crypto' rather than the stream-based `createSign` class. The first parameter (algorithm) 
  * must remain `undefined`. This is a strict constraint of the Ed25519 standard in Node.js, as Ed25519 
  * does not support separate pre-hash digest identifiers like RSA or traditional ECDSA.
  * * @author Kefmat
- * @version 1.3.0
+ * @version 1.3.1
  */
 export class TokenEngine {
     
@@ -53,7 +55,7 @@ export class TokenEngine {
     /**
      * Synthesizes and cryptographically signs a client-side DPoP proof envelope.
      * Enforces Ed25519 compliance by supplying an undefined algorithm parameter to the signer.
-     * * NOTE FOR THE NEXT PROGRAMMER: The optional server nonce parameter must be explicitly appended
+     * * NOTE: The optional server nonce parameter must be explicitly appended
      * to the internal payload definition to assert dynamic fresh execution boundaries.
      * * @param clientPrivateKey The client's asymmetric signing key.
      * @param clientPublicKey The client's public identity key to bound to the session context.
@@ -86,7 +88,7 @@ export class TokenEngine {
 
     /**
      * Evaluates a client DPoP proof to certify legitimacy and extract the verification tracking thumbprint.
-     * * NOTE FOR THE NEXT PROGRAMMER: If an expected nonce boundary check is supplied by the middleware context, 
+     * * NOTE: If an expected nonce boundary check is supplied by the middleware context, 
      * it must perform strict parameter matching against the internal payload to guard against cross-server replay attacks.
      * * @param rawProof The incoming base64url-encoded proof wrapper.
      * @param expectedHtm The targeted HTTP Method context.
