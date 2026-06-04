@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { MerkleLedger, type LedgerEvent } from './primitives/ledger.js';
+import { MerkleLedger } from './primitives/ledger.js';
 import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 import { TokenRevocationRegistry } from './primitives/revocation.js';
@@ -13,7 +13,7 @@ import { CryptographicNonceEngine } from './primitives/nonce.js';
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.7.2
+ * @version 1.7.3
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
@@ -102,9 +102,7 @@ class AccessOrchestrator {
         // 5. Client Recovery Phase (Resubmitting with Nonce Integration)
         console.log("\n[Client] Extracting server-issued nonce token and constructing fresh DPoP proof context...");
         
-        // NOTE FOR THE NEXT PROGRAMMER: Avoid manual string manipulation or regex parsing on the 
-        // DPoP proof string, as the underlying token formatting is managed natively by the TokenEngine.
-        // Instead, pass the server-issued nonce directly as an optional parameter into the native factory method.
+        // Pass the server-issued nonce directly as an optional parameter into the native factory method
         const finalNonceBoundProof = TokenEngine.createClientDPoPProof(
             clientKeys.privateKey,
             clientKeys.publicKey,
@@ -145,9 +143,7 @@ class AccessOrchestrator {
 
             console.log("[Resource Server] Intercepting adversarial pipeline request...");
             
-            // NOTE FOR THE NEXT PROGRAMMER: The adversary attempts to submit a spoofed proof containing 
-            // the stolen nonce, but the nonce engine cross-checks the encrypted binding hash against 
-            // the rogue signature's thumbprint, ensuring total isolation against replay attempts.
+            // The adversary attempts to submit a spoofed proof containing the stolen nonce
             const rogueProof = TokenEngine.createClientDPoPProof(
                 rogueClientKeys.privateKey,
                 rogueClientKeys.publicKey,
