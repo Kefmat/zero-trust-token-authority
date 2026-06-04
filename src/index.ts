@@ -13,7 +13,7 @@ import { CryptographicNonceEngine } from './primitives/nonce.js';
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.7.1
+ * @version 1.7.2
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
@@ -102,31 +102,16 @@ class AccessOrchestrator {
         // 5. Client Recovery Phase (Resubmitting with Nonce Integration)
         console.log("\n[Client] Extracting server-issued nonce token and constructing fresh DPoP proof context...");
         
-        const dynamicNonceProof = TokenEngine.createClientDPoPProof(
+        // NOTE FOR THE NEXT PROGRAMMER: Avoid manual string manipulation or regex parsing on the 
+        // DPoP proof string, as the underlying token formatting is managed natively by the TokenEngine.
+        // Instead, pass the server-issued nonce directly as an optional parameter into the native factory method.
+        const finalNonceBoundProof = TokenEngine.createClientDPoPProof(
             clientKeys.privateKey,
             clientKeys.publicKey,
             apiMethod,
-            apiUrl
+            apiUrl,
+            generatedServerNonce
         );
-
-        // Parse token and decode internal segments to manually update proof with nonce string
-        const parsedProofSegments = dynamicNonceProof.split('.');
-        const headerSegment = parsedProofSegments[0];
-        const payloadSegment = parsedProofSegments[1];
-        
-        // NOTE FOR THE NEXT PROGRAMMER: Explicitly validate array index bounds to satisfy strict
-        // compiler checks (e.g., noUncheckedIndexedAccess) before feeding into Buffer primitives.
-        if (headerSegment === undefined || payloadSegment === undefined) {
-            throw new Error("SIMULATION_ERROR: Failed to slice initial token segments correctly.");
-        }
-
-        const proofPayloadDecoded = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8'));
-        proofPayloadDecoded.nonce = generatedServerNonce; // Dynamic mutation to simulate nonce inclusion
-        
-        const updatedPayloadEncoded = Buffer.from(JSON.stringify(proofPayloadDecoded)).toString('base64url');
-        const recompiledSignature = createHmac('sha256', 'mock-client-proof-signing-pass')
-            .update(`${headerSegment}.${updatedPayloadEncoded}`)
-            .digest('base64url');
 
         console.log("[Client -> Server] Re-submitting request with nonce-bound DPoP confirmation...");
         console.log("[Resource Server] Intercepting pipeline: evaluating state boundaries and proof nonces...");
@@ -135,8 +120,16 @@ class AccessOrchestrator {
             // Validate state-drift freshness fence
             isolationGuard.verifyStateFreshness();
             
-            // Extract and validate the server-injected nonce inside the middleware tier
-            nonceEngine.validateNonce(proofPayloadDecoded.nonce, clientThumbprint);
+            // Verify the DPoP proof framework using the native TokenEngine layer
+            const resourceThumbprint = TokenEngine.verifyClientDPoPProof(
+                finalNonceBoundProof,
+                apiMethod,
+                apiUrl,
+                generatedServerNonce
+            );
+            
+            // Validate the server-injected nonce lifespan and thumbprint binding context inside the middleware tier
+            nonceEngine.validateNonce(generatedServerNonce, resourceThumbprint);
             console.log("[Resource Server] Nonce signature verified and bound to active client thumbprint.");
             console.log("[Resource Server] Authorization Successful: Handshake validated, access granted.\n");
         } catch (error: any) {
@@ -149,11 +142,28 @@ class AccessOrchestrator {
         
         try {
             const rogueClientKeys = TokenEngine.generateClientKeys();
-            const rogueThumbprint = createHash('sha256').update(rogueClientKeys.publicKey).digest('hex');
 
             console.log("[Resource Server] Intercepting adversarial pipeline request...");
-            // The adversary attempts to submit the stolen nonce but their public key thumbprint does not match the nonce's encrypted context
-            nonceEngine.validateNonce(generatedServerNonce, rogueThumbprint);
+            
+            // NOTE FOR THE NEXT PROGRAMMER: The adversary attempts to submit a spoofed proof containing 
+            // the stolen nonce, but the nonce engine cross-checks the encrypted binding hash against 
+            // the rogue signature's thumbprint, ensuring total isolation against replay attempts.
+            const rogueProof = TokenEngine.createClientDPoPProof(
+                rogueClientKeys.privateKey,
+                rogueClientKeys.publicKey,
+                apiMethod,
+                apiUrl,
+                generatedServerNonce
+            );
+
+            const rogueResourceThumbprint = TokenEngine.verifyClientDPoPProof(
+                rogueProof,
+                apiMethod,
+                apiUrl,
+                generatedServerNonce
+            );
+
+            nonceEngine.validateNonce(generatedServerNonce, rogueResourceThumbprint);
             console.log("[CRITICAL ALERT] Integrity failure. Adversary bypassed nonce binding rules.");
         } catch (error: any) {
             console.log(`[DEFENSE SUCCESS] Resource Server blocked threat. Reason: ${error.message}\n`);
