@@ -4,16 +4,16 @@ import { KeyMatrix } from './primitives/keys.js';
 import { TokenEngine } from './primitives/tokens.js';
 import { TokenRevocationRegistry } from './primitives/revocation.js';
 import { JwksDistributor, RemoteKeyResolver } from './primitives/jwks.js';
-import { BloomFilterAccumulator } from './primitives/accumulator.js';
+import { RevocationAccumulator } from './primitives/accumulator.js';
 import { StateDriftIsolationGuard, type CheckpointCertificate } from './primitives/checkpoint.js';
 import { ThresholdSignatureEngine, type PartialSignatureFragment } from './primitives/threshold.js';
-import { CryptographicNonceEngine } from './primitives/nonce.js';
+import { NonceEngine } from './primitives/nonce.js';
 
 /**
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.7.4
+ * @version 1.7.5
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
@@ -36,12 +36,9 @@ class AccessOrchestrator {
         const ledger = new MerkleLedger();
         const keyMatrix = new KeyMatrix(3600000);
         const revocationRegistry = new TokenRevocationRegistry();
-        const edgeAccumulator = new BloomFilterAccumulator(128, 4);
+        const edgeAccumulator = new RevocationAccumulator(100000);
         const isolationGuard = new StateDriftIsolationGuard(3000, this.BOUNDARY_SECRET);
         const thresholdEngine = new ThresholdSignatureEngine(5, 3);
-        
-        // Initialize Server Nonce Engine with a strict 10-second validity window
-        const nonceEngine = new CryptographicNonceEngine(10000);
         
         const clusterShares = thresholdEngine.getAvailableShares();
         const jwksDistributor = new JwksDistributor();
@@ -94,8 +91,8 @@ class AccessOrchestrator {
         console.log("[Client -> Server] Sending request payload...");
         console.log("[Resource Server] Evaluating request properties...");
         
-        // Server rejects the request due to a missing nonce and generates a challenge token
-        const generatedServerNonce = nonceEngine.generateNonce(clientThumbprint);
+        // Server rejects the request due to a missing nonce and generates a challenge token using the shared cluster secret
+        const generatedServerNonce = NonceEngine.generateNonce(this.BOUNDARY_SECRET);
         console.log(`[DEFENSE INTERCEPT] Access Denied. Reason: DPoP proof missing server-injected nonce.`);
         console.log(`[Resource Server -> Client] Emitting HTTP 401 Challenge with fresh DPoP-Nonce header.`);
 
@@ -126,8 +123,12 @@ class AccessOrchestrator {
                 generatedServerNonce
             );
             
-            // Validate the server-injected nonce lifespan and thumbprint binding context inside the middleware tier
-            nonceEngine.validateNonce(generatedServerNonce, resourceThumbprint);
+            // NOTE: Validate the server-injected nonce lifespan and assert that the thumbprint matches the original client context
+            NonceEngine.verifyNonce(generatedServerNonce, this.BOUNDARY_SECRET, 10000);
+            if (resourceThumbprint !== clientThumbprint) {
+                throw new Error("Nonce binding validation failed: Client thumbprint mismatch.");
+            }
+            
             console.log("[Resource Server] Nonce signature verified and bound to active client thumbprint.");
             console.log("[Resource Server] Authorization Successful: Handshake validated, access granted.\n");
         } catch (error: any) {
@@ -159,7 +160,12 @@ class AccessOrchestrator {
                 generatedServerNonce
             );
 
-            nonceEngine.validateNonce(generatedServerNonce, rogueResourceThumbprint);
+            // NOTE: Evaluate the stolen nonce structure and assert identity tracking properties
+            NonceEngine.verifyNonce(generatedServerNonce, this.BOUNDARY_SECRET, 10000);
+            if (rogueResourceThumbprint !== clientThumbprint) {
+                throw new Error("Nonce binding validation failed: Client thumbprint mismatch.");
+            }
+            
             console.log("[CRITICAL ALERT] Integrity failure. Adversary bypassed nonce binding rules.");
         } catch (error: any) {
             console.log(`[DEFENSE SUCCESS] Resource Server blocked threat. Reason: ${error.message}\n`);
