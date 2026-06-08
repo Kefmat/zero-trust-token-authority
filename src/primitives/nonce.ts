@@ -8,7 +8,7 @@ import { createHmac, randomBytes } from 'node:crypto';
  * the symmetric cluster secret can immediately assert token freshness and cryptographically
  * verify that the nonce was minted by an authorized cluster authority, preventing pre-generation.
  * * @author Kefmat
- * @version 1.0.0
+ * @version 1.0.2
  */
 export class NonceEngine {
 
@@ -33,25 +33,36 @@ export class NonceEngine {
 
     /**
      * Evaluates a stateless challenge nonce to assert structural integrity and time windows.
-     * * NOTE: This method uses a constant-time comparison buffer strategy
-     * indirectly through standard cryptographic evaluation paths where applicable, preventing
-     * timing attacks against the signature verification boundaries.
-     * * @param rawNonce The incoming base64url-encoded token proof nonce string.
+     * * NOTE: To bypass type-narrowing degradation inside try-catch scopes 
+     * present in specific TypeScript compiler baselines, the incoming parameter is bound to a 
+     * local guaranteed string primitive via nullish coalescing prior to verification processing.
+     * * @param rawNonce The incoming base64url-encoded token proof nonce string, or undefined if missing.
      * @param clusterSecret The shared symmetric key used across the authority cluster plane.
      * @param maxLifespanMs The maximum allowable duration (TTL) for a transient validation window (default 2 mins).
      * @returns boolean true if the nonce is verified authentic and active.
      * @throws Error if structural mutations, cryptographic signature mismatches, or TTL expirations occur.
      */
-    public static verifyNonce(rawNonce: string, clusterSecret: string, maxLifespanMs: number = 120000): boolean {
+    public static verifyNonce(
+        rawNonce: string | undefined,
+        clusterSecret: string,
+        maxLifespanMs: number = 120000
+    ): boolean {
+        // Coerce down to a concrete string primitive to achieve bulletproof type inference
+        const nonceStr = rawNonce ?? '';
+        
+        if (!nonceStr) {
+            throw new Error("Nonce verification failed: Missing required challenge nonce assertion.");
+        }
+
         try {
-            const decoded = Buffer.from(rawNonce, 'base64url').toString('utf8');
+            const decoded = Buffer.from(nonceStr, 'base64url').toString('utf8');
             const parts = decoded.split('.');
 
             if (parts.length !== 3) {
                 throw new Error("Nonce integrity verification failed: Invalid structural payload components.");
             }
 
-            const [timestampStr, entropy, incomingHmac] = parts;
+            const [timestampStr, entropy, incomingHmac] = parts as [string, string, string];
             const timestamp = parseInt(timestampStr, 10);
 
             // Validate chronological boundaries
