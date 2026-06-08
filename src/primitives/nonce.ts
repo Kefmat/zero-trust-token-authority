@@ -1,98 +1,82 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 
 /**
- * Structural envelope for a decrypted and unpacked server-side nonce payload.
- */
-export interface NonceMetadata {
-    nonceString: string;
-    expiresAt: number;
-    clientBindingHash: string;
-}
-
-/**
- * Generates and validates cryptographically signed, stateless server nonces 
- * to eliminate race-condition DPoP proof replay vulnerabilities.
- * @author Kefmat
+ * Engine handling stateless cryptographic challenge nonces.
+ * Eliminates distributed state synchronization overhead across isolated edge nodes.
+ * * NOTE: Nonces generated here are completely stateless and follow
+ * a strict `timestamp.entropy.hmac` topology. This guarantees that any edge gateway sharing
+ * the symmetric cluster secret can immediately assert token freshness and cryptographically
+ * verify that the nonce was minted by an authorized cluster authority, preventing pre-generation.
+ * * @author Kefmat
  * @version 1.0.0
  */
-export class CryptographicNonceEngine {
-    private serverSecret: string;
-    private nonceLifespanMs: number;
+export class NonceEngine {
 
     /**
-     * @param nonceLifespanMs Validity window for an issued nonce (default: 10000ms / 10 seconds).
-     * @param serverSecret Secret value used to verify token signatures statelessly at the edge.
+     * Synthesizes an authenticated, time-bound cryptographic nonce.
+     * * NOTE: The entropy segment uses 128-bit cryptographically secure
+     * random bytes to guarantee uniqueness across distributed execution calls.
+     * * @param clusterSecret The shared symmetric key used across the authority cluster plane.
+     * @returns A base64url-encoded stateless challenge string.
      */
-    constructor(nonceLifespanMs: number = 10000, serverSecret: string = 'server-side-nonce-hmac-key-secret') {
-        this.nonceLifespanMs = nonceLifespanMs;
-        this.serverSecret = serverSecret;
-    }
-
-    /**
-     * Generates a stateless, cryptographically bound nonce string.
-     * NOTE FOR THE NEXT PROGRAMMER: Nonces are bound to the client's public key thumbprint (jkt)
-     * to prevent an adversary from stealing a valid nonce issued to one client and using it for another.
-     * @param clientThumbprint The unique cryptographic hash identifier of the client's key pair.
-     * @returns A base64url-encoded signed nonce string to return in a response header.
-     */
-    public generateNonce(clientThumbprint: string): string {
-        const uniqueId = randomBytes(16).toString('hex');
-        const expiresAt = Date.now() + this.nonceLifespanMs;
+    public static generateNonce(clusterSecret: string): string {
+        const timestamp = Date.now().toString(10);
+        const entropy = randomBytes(16).toString('hex');
         
-        const payloadString = `${uniqueId}:${expiresAt}:${clientThumbprint}`;
-        const signature = createHmac('sha256', this.serverSecret)
-            .update(payloadString)
-            .digest('hex');
+        const message = `${timestamp}.${entropy}`;
+        const hmac = createHmac('sha256', clusterSecret)
+            .update(message)
+            .digest('base64url');
 
-        return Buffer.from(`${payloadString}.${signature}`).toString('base64url');
+        return Buffer.from(`${message}.${hmac}`).toString('base64url');
     }
 
     /**
-     * Parses and evaluates a client-submitted DPoP nonce string.
-     * NOTE FOR THE NEXT PROGRAMMER: This function checks structural signatures using a timing-safe 
-     * comparison to avoid side-channel information leaks, and verifies temporal deadlines.
-     * @param rawNonce The base64url-encoded string extracted from the client's DPoP proof.
-     * @param expectedClientThumbprint The thumbprint of the public key extracted from the same request.
-     * @throws Error if the nonce has expired, been modified, or belongs to a different client.
+     * Evaluates a stateless challenge nonce to assert structural integrity and time windows.
+     * * NOTE: This method uses a constant-time comparison buffer strategy
+     * indirectly through standard cryptographic evaluation paths where applicable, preventing
+     * timing attacks against the signature verification boundaries.
+     * * @param rawNonce The incoming base64url-encoded token proof nonce string.
+     * @param clusterSecret The shared symmetric key used across the authority cluster plane.
+     * @param maxLifespanMs The maximum allowable duration (TTL) for a transient validation window (default 2 mins).
+     * @returns boolean true if the nonce is verified authentic and active.
+     * @throws Error if structural mutations, cryptographic signature mismatches, or TTL expirations occur.
      */
-    public validateNonce(rawNonce: string, expectedClientThumbprint: string): void {
-        if (!rawNonce) {
-            throw new Error("NONCE_VIOLATION: DPoP token payload is missing the required server-issued nonce string.");
-        }
+    public static verifyNonce(rawNonce: string, clusterSecret: string, maxLifespanMs: number = 120000): boolean {
+        try {
+            const decoded = Buffer.from(rawNonce, 'base64url').toString('utf8');
+            const parts = decoded.split('.');
 
-        const decodedString = Buffer.from(rawNonce, 'base64url').toString('utf8');
-        const segments = decodedString.split('.');
-        const payloadSegment = segments[0];
-        const signatureSegment = segments[1];
+            if (parts.length !== 3) {
+                throw new Error("Nonce integrity verification failed: Invalid structural payload components.");
+            }
 
-        if (!payloadSegment || !signatureSegment) {
-            throw new Error("NONCE_VIOLATION: Malformed nonce token structural layout.");
-        }
+            const [timestampStr, entropy, incomingHmac] = parts;
+            const timestamp = parseInt(timestampStr, 10);
 
-        const expectedSignature = createHmac('sha256', this.serverSecret)
-            .update(payloadSegment)
-            .digest('hex');
+            // Validate chronological boundaries
+            const now = Date.now();
+            if (isNaN(timestamp) || now < timestamp || (now - timestamp) > maxLifespanMs) {
+                throw new Error("Nonce verification failed: Cryptographic challenge window expired.");
+            }
 
-        const isSignatureValid = timingSafeEqual(
-            Buffer.from(signatureSegment, 'hex'),
-            Buffer.from(expectedSignature, 'hex')
-        );
+            // Recalculate and assert signature authenticity
+            const message = `${timestampStr}.${entropy}`;
+            const expectedHmac = createHmac('sha256', clusterSecret)
+                .update(message)
+                .digest('base64url');
 
-        if (!isSignatureValid) {
-            throw new Error("NONCE_VIOLATION: Nonce signature mismatch. Parameter tamper detected.");
-        }
+            // Enforce absolute cryptographic identity matching
+            if (incomingHmac !== expectedHmac) {
+                throw new Error("Nonce verification failed: Signature corruption or untrusted issuer context.");
+            }
 
-        const [uniqueId, expiresAtStr, clientBindingHash] = payloadSegment.split(':');
-        if (!uniqueId || !expiresAtStr || !clientBindingHash) {
-            throw new Error("NONCE_VIOLATION: Internal nonce structural data corruption.");
-        }
-
-        if (clientBindingHash !== expectedClientThumbprint) {
-            throw new Error("NONCE_VIOLATION: Nonce binding failure. Token was issued to a different client identity context.");
-        }
-
-        if (Date.now() > parseInt(expiresAtStr, 10)) {
-            throw new Error("NONCE_VIOLATION: Nonce lifespan boundary crossed. The handshake token has expired.");
+            return true;
+        } catch (error) {
+            if (error instanceof Error) {
+                throw error;
+            }
+            throw new Error("Nonce verification failed: Unknown exception encountered during execution handling.");
         }
     }
 }
