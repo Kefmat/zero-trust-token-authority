@@ -12,9 +12,9 @@ flowchart TD
     KM["Key Matrix Rotation Node"] -->|Public Keys| JWKS["Jwks Distributor"]
     ML["Merkle Ledger"] -->|State Root Checkpoints| CP["Checkpoint Certificates"]
     Client["Client Node"] -->|API Request + DPoP Proof| SF["State-Drift Isolation Fence"]
-    SF -->|Freshness Verified| BF["Tier 1: Bloom Filter Accumulator"]
-    BF -->|Cache Miss: Active Token| VA["DPoP Binding Validator"]
-    BF -->|Cache Hit: Suspected Revoked| MP["Tier 2: Cryptographic Merkle Proof Validator"]
+    SF -->|Freshness Verified| RA["Tier 1: Revocation Accumulator"]
+    RA -->|Cache Miss: Active Token| VA["DPoP Binding Validator"]
+    RA -->|Cache Hit: Suspected Revoked| MP["Tier 2: Cryptographic Merkle Proof Validator"]
     MP -->|Verified Non-Revoked| VA
     MP -->|Verified Revoked| RE["Access Denied"]
     VA -->|Success| ProtectedAPI["Protected Business Services"]
@@ -116,10 +116,11 @@ end
 ### Primitives Overview
 
 - `src/primitives/threshold.ts`: Manages multi-authority cryptographic operations, generating independent secret fractions and aggregating $T$-of-$N$ signature tokens while preventing share duplication exploits.
-- `src/primitives/checkpoint.ts`: Establishes the `StateDriftIsolationGuard` middleware layer, verifying incoming authority snapshots via HMAC chains and managing edge fail-secure lockout thresholds.
-- `src/primitives/accumulator.ts`: Implements a deterministic Bloom Filter configured with multiple independent salting variations to track blinded tracking hashes within localized memory constraints.
+- `src/primitives/checkpoint.ts`: Establishes the StateDriftIsolationGuard middleware layer, verifying incoming authority snapshots via HMAC chains and managing edge fail-secure lockout thresholds.
+- `src/primitives/accumulator.ts`: Implements the RevocationAccumulator simulating a high-performance Cuckoo Filter matrix to evaluate cryptographic fingerprints within constant lookup boundaries while allowing memory reclamation.
 - `src/primitives/ledger.ts`: An append-only Merkle Tree engine computing real-time state roots and outputting audit proof nodes.
-- `src/primitives/tokens.ts`: Handles validation and mapping structures for DPoP proof-of-possession challenges and asymmetric thumbprints. **Enforces structural type-safety definitions for token assertions that explicitly support strict compilation environments configuration matrices (such as `exactOptionalPropertyTypes: true`).**
+- `src/primitives/nonce.ts`: Implements the stateless NonceEngine to issue and verify single-use server challenge nonces, binding validation sequences to the active client public key footprint.
+- `src/primitives/tokens.ts`: Handles validation and mapping structures for DPoP proof-of-possession challenges and asymmetric thumbprints. Enforces structural type-safety definitions for token assertions that explicitly support strict compilation environments configuration matrices (such as exactOptionalPropertyTypes: true).
 
 ## Getting Started
 
@@ -157,52 +158,34 @@ The following log trace demonstrates the end-to-end execution of the architectur
 
 ```text
 =================================================
-   Zero-Trust Token Authority: Access Engine
+   Zero-Trust Token Authority: Access Engine     
 =================================================
-
-[Ledger] Genesis State Hash: caef4bda766426eb49280a2ad2b9e51f3ac145c97f236e2b4300e391f6480bdd
-[Ledger] Key Matrix Initialized. Merkle Root: 1d156b9f95f4ffa33f66e63d28f5fa85eaa3b7e24fcfde037a90bf1e6ede92e9
-[Control Plane] Initial cryptographic boundary checkpoint broadcasted to remote gateways.
-[IdP Cluster] Initialized 5 Independent Secret Share Keys. Quorum Threshold: 3
 
 [Client] Generating ephemeral cryptographic proof-of-possession keys...
 [Client] Generating DPoP proof for token issuance endpoint...
 [IdP Cluster] Processing incoming token request and parsing proof framework...
-
-[Simulation] Adversary compromises a single cluster node (NODE-SHARE-001) and attempts to forge an access token...
-[Adversary] Forging signature component using compromised key fragment: NODE-SHARE-001
-[IdP Cluster] Aggregating token signatures and validating security bounds...
-[DEFENSE SUCCESS] Threshold engine blocked token assembly. Reason: QUORUM_FAILURE: Insufficient signature tokens. Gathered 1 unique shares, but a minimum of 3 is required.
-
-[IdP Cluster] Routing authentic request across independent cluster nodes to collect quorum signatures...
-[Cluster] Node NODE-SHARE-001 validated transaction and appended unique signature fragment.
-[Cluster] Node NODE-SHARE-003 validated transaction and appended unique signature fragment.
-[Cluster] Node NODE-SHARE-005 validated transaction and appended unique signature fragment.
-[IdP Cluster] Aggregating consensus fragments...
 [IdP Cluster] Quorum verified. Threshold-certified token successfully issued.
-[Ledger] Event committed. Merkle Root updated to: fed37d5722d86c24b88e43d864433066ad2903a9f399fabe28934c87ac2d4633
 
-[Client] Accessing protected business API with the threshold-certified token...
-[Resource Server] Evaluating token payload and threshold signature validation matrices...
-[Resource Server] Intercepting request pipeline: evaluating state freshness boundaries...
-[Resource Server] Boundary State Certified Fresh. Continuing with token payload assessment...
-[Resource Server] Fast-path complete: Local accumulator confirms token is active.
-[Resource Server] Authorization Successful: Proof-of-Possession and Threshold Quorum confirmed.
+[Client] Accessing protected business API with the threshold token...
+[Client -> Server] Sending request payload...
+[Resource Server] Evaluating request properties...
+[DEFENSE INTERCEPT] Access Denied. Reason: DPoP proof missing server-injected nonce.
+[Resource Server -> Client] Emitting HTTP 401 Challenge with fresh DPoP-Nonce header.
 
-[Simulation] Adversary cuts control plane data pipes to simulate an edge network partition...
-[Simulation] IdP emits global revocation warning, but the isolated edge gateway is blocked from receiving it...
-[Ledger] Revocation state committed. Global Merkle Root updated to: 237a1bcb106dd5f2f8b5b15eb2759a3758cb9b0876edc1fe1320fcecdc4b46b3
-[Control Plane] Warning broadcast failed: Edge accumulator synchronization blocked.
-[Simulation] Advancing baseline operational time forward by 4000 milliseconds...
+[Client] Extracting server-issued nonce token and constructing fresh DPoP proof context...
+[Client -> Server] Re-submitting request with nonce-bound DPoP confirmation...
+[Resource Server] Intercepting pipeline: evaluating state boundaries and proof nonces...
+[Resource Server] Nonce signature verified and bound to active client thumbprint.
+[Resource Server] Authorization Successful: Handshake validated, access granted.
 
-[Client] Attempting to access protected API again across the partitioned boundary...
-[Resource Server] Intercepting request pipeline: evaluating state freshness boundaries...
-[DEFENSE SUCCESS] Resource Server successfully blocked access. Reason: ISOLATION_LOCKOUT: Edge state synchronization boundary has drifted by 4015ms. Control link unavailable. Gateway locked.
+[Simulation] Adversary captures the client's previous DPoP proof and attempts an immediate replay...
+[Simulation] Adversary targets a different resource server node or context using the same nonce token...
+[Resource Server] Intercepting adversarial pipeline request...
+[DEFENSE SUCCESS] Resource Server blocked threat. Reason: Nonce binding validation failed: Client thumbprint mismatch.
 
 =================================================
-         Final Cryptographic State Audit
+         Final Cryptographic State Audit         
 =================================================
-Final Merkle State Root: 237a1bcb106dd5f2f8b5b15eb2759a3758cb9b0876edc1fe1320fcecdc4b46b3
-Total System Events Recorded Immutably: 3
+Final Merkle State Root: caef4bda766426eb49280a2ad2b9e51f3ac145c97f236e2b4300e391f6480bdd
 =================================================
 ```
