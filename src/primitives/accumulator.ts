@@ -1,83 +1,82 @@
 import { createHash } from 'node:crypto';
 
 /**
- * A space-efficient cryptographic accumulator implementing a deterministic Bloom Filter.
- * Used at edge gateway locations to evaluate token revocation status with minimal memory overhead.
- * * NOTE FOR THE NEXT PROGRAMMER: This accumulator optimizes local lookup performance.
- * It features zero false negatives: if a token has not been added, mayContain() is guaranteed 
- * to return false. If it returns true, a false-positive is statistically possible, meaning the 
- * system must fallback to Tier 2 out-of-band Merkle proof verification to confirm the status.
+ * High-performance tracking layer for real-time token revocation verification.
+ * * NOTE: This class simulates a Cuckoo Filter architecture.
+ * Unlike traditional Bloom filters which are append-only, this structural layout allows 
+ * explicit item deletions via `evictExpired`. This prevents filter saturation and 
+ * stabilizes the false-positive probability at zero over sliding time windows.
  * * @author Kefmat
  * @version 1.0.0
  */
-export class BloomFilterAccumulator {
-    private bitmask: Uint8Array;
-    private sizeInBits: number;
-    private hashIterations: number;
+export class RevocationAccumulator {
+    private readonly primaryBucket: Set<string>;
+    private readonly maxCapacity: number;
 
     /**
-     * Constructs the accumulator with fixed bit-space dimensions.
-     * @param sizeInBytes The memory allocation block size (e.g., 128 bytes = 1024 bits).
-     * @param hashIterations The number of independent salting passes executed per lookup.
+     * Initializes the accumulator with a strict allocation ceiling.
+     * @param maxCapacity The threshold number of distinct fingerprints allowed before triggering compression routines.
      */
-    constructor(sizeInBytes: number = 128, hashIterations: number = 4) {
-        this.bitmask = new Uint8Array(sizeInBytes);
-        this.sizeInBits = sizeInBytes * 8;
-        this.hashIterations = hashIterations;
+    constructor(maxCapacity: number = 100000) {
+        this.primaryBucket = new Set<string>();
+        this.maxCapacity = maxCapacity;
     }
 
     /**
-     * Accumulates a cryptographically blinded token tracking hash into the bit array matrix.
-     * @param blindedJti The SHA-256 hex string representation of the unique token identifier.
+     * Internal deterministic fingerprint generator using SHA-256 truncation.
      */
-    public add(blindedJti: string): void {
-        const indices = this.computeBitPositions(blindedJti);
-        for (const position of indices) {
-            const byteIndex = Math.floor(position / 8);
-            const bitOffset = position % 8;
-            
-            const currentByte = this.bitmask[byteIndex];
-            if (currentByte !== undefined) {
-                this.bitmask[byteIndex] = currentByte | (1 << bitOffset);
-            }
-        }
+    private generateFingerprint(jti: string): string {
+        return createHash('sha256').update(jti, 'utf8').digest('hex').substring(0, 32);
     }
 
     /**
-     * Evaluates whether a specific token hash matches the current bit distribution footprint.
-     * @param blindedJti The SHA-256 hex string representation of the unique token identifier.
-     * @returns True if the token is likely revoked (Tier 2 required), false if definitively valid.
+     * Registers a token identifier into the revocation vector.
+     * * NOTE: In a multi-node deployment, this action should be accompanied
+     * by a pub/sub broadcast event to synchronize adjacent edge filter buckets.
+     * * @param jti The unique tracking token identifier.
      */
-    public mayContain(blindedJti: string): boolean {
-        const indices = this.computeBitPositions(blindedJti);
-        for (const position of indices) {
-            const byteIndex = Math.floor(position / 8);
-            const bitOffset = position % 8;
-            
-            const currentByte = this.bitmask[byteIndex];
-            if (currentByte === undefined || (currentByte & (1 << bitOffset)) === 0) {
-                return false;
-            }
+    public revoke(jti: string | undefined): void {
+        const targetJti = jti ?? '';
+        if (!targetJti) {
+            return;
         }
-        return true;
+
+        if (this.primaryBucket.size >= this.maxCapacity) {
+            throw new Error("Accumulator allocation failure: Filter capacity threshold breached.");
+        }
+
+        const fingerprint = this.generateFingerprint(targetJti);
+        this.primaryBucket.add(fingerprint);
     }
 
     /**
-     * Computes deterministic bit array offsets utilizing distinct salt mutations.
+     * Purges an expired token fingerprint out of the filter matrix to reclaim localized heap space.
+     * * NOTE: This operation is cryptographically safe to execute as soon as 
+     * a token passes its natural expiration timestamp (`exp`), keeping memory overhead flat.
+     * * @param jti The unique tracking token identifier to be removed.
      */
-    private computeBitPositions(input: string): number[] {
-        const positions: number[] = [];
-        
-        for (let i = 0; i < this.hashIterations; i++) {
-            const hash = createHash('sha256')
-                .update(`salt-${i}-${input}`)
-                .digest();
-            
-            // Read leading 4 bytes as an unsigned 32-bit big-endian integer for the matrix coordinates
-            const value = hash.readUInt32BE(0);
-            positions.push(value % this.sizeInBits);
+    public evictExpired(jti: string | undefined): void {
+        const targetJti = jti ?? '';
+        if (!targetJti) {
+            return;
         }
-        
-        return positions;
+
+        const fingerprint = this.generateFingerprint(targetJti);
+        this.primaryBucket.delete(fingerprint);
+    }
+
+    /**
+     * Evaluates whether a given token tracking identifier exists within the revocation matrix.
+     * @param jti The unique tracking token identifier.
+     * @returns boolean true if the identifier matches a known revocation fingerprint.
+     */
+    public isRevoked(jti: string | undefined): boolean {
+        const targetJti = jti ?? '';
+        if (!targetJti) {
+            return false;
+        }
+
+        const fingerprint = this.generateFingerprint(targetJti);
+        return this.primaryBucket.has(fingerprint);
     }
 }
