@@ -13,7 +13,7 @@ import { CryptographicNonceEngine } from './primitives/nonce.js';
  * AccessOrchestrator manages the end-to-end simulation pipeline for the 
  * Zero-Trust Token Authority, validating defenses against advanced cryptographic attack vectors.
  * @author Kefmat
- * @version 1.7.3
+ * @version 1.7.4
  */
 class AccessOrchestrator {
     private static BOUNDARY_SECRET = 'isolated-boundary-token-secret';
