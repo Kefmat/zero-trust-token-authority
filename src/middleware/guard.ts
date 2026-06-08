@@ -1,6 +1,6 @@
-import { TokenEngine } from '../primitives/tokens';
-import { NonceEngine } from '../primitives/nonce';
-import { RevocationAccumulator } from '../primitives/accumulator';
+import { TokenEngine } from '../primitives/tokens.js';
+import { NonceEngine } from '../primitives/nonce.js';
+import { RevocationAccumulator } from '../primitives/accumulator.js';
 
 export interface InterceptedRequest {
     headers: Record<string, string | string[] | undefined>;
